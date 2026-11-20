@@ -3,138 +3,205 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AETHER CHAT // Canlı Sohbet Omurgası</title>
+  <title>AETHER CHAT // Supabase Canlı Sohbet</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
     body { background: #070b14; color: #f8fafc; min-height: 100vh; padding: 16px; }
-    .box { max-width: 760px; margin: 0 auto; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    .box { max-width: 820px; margin: 0 auto; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
     .row { display: flex; gap: 8px; flex-wrap: wrap; }
-    input { flex: 1; min-width: 140px; background: #1e293b; border: 1px solid #334155; color: #fff; padding: 10px 12px; border-radius: 9px; font-size: 0.9rem; }
+    input { flex: 1; min-width: 140px; background: #1e293b; border: 1px solid #334155; color: #fff; padding: 10px 12px; border-radius: 9px; font-size: 0.9rem; outline: none; }
+    input:focus { border-color: #22d3ee; }
     button { background: #22d3ee; color: #04131a; border: none; padding: 10px 16px; border-radius: 9px; font-weight: 800; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
     .msgs { height: 340px; overflow-y: auto; background: #060a12; border: 1px solid #1e293b; border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-    .m { background: #162038; padding: 8px 11px; border-radius: 9px; font-size: 0.88rem; }
-    .m b { color: #22d3ee; font-size: 0.76rem; display: block; margin-bottom: 2px; }
+    .m { background: #162038; padding: 9px 12px; border-radius: 9px; font-size: 0.88rem; line-height: 1.45; }
+    .m b { color: #22d3ee; font-size: 0.76rem; display: block; margin-bottom: 3px; }
     .status { font-size: 0.78rem; color: #94a3b8; min-height: 18px; }
+    .err { color: #fb7185; }
+    .ok { color: #86efac; }
   </style>
 </head>
 <body>
   <div class="box">
-    <h2>Canlı Sohbet Omurgası</h2>
+    <h2>Canlı Sohbet Omurgası (Supabase)</h2>
+    <div class="grid">
+      <input id="sbUrl" placeholder="Supabase URL (https://xxxx.supabase.co)" oninput="saveCfg()" />
+      <input id="sbKey" placeholder="Supabase anon / publishable key" oninput="saveCfg()" />
+      <input id="nick" placeholder="Adın" value="Yunus" oninput="saveCfg()" />
+      <input id="room" placeholder="Oda kodu" value="alperen-yunus-1903" oninput="saveCfg()" />
+    </div>
     <div class="row">
-      <input id="nick" placeholder="Adın" value="Yunus" />
-      <input id="room" placeholder="Oda kodu" value="alperen-yunus-1903" />
-      <button type="button" onclick="startLoop()">Odayı Aç</button>
+      <button type="button" onclick="startChat()">Odaya Bağlan</button>
     </div>
     <div class="msgs" id="msgs"></div>
     <div class="row">
       <input id="txt" placeholder="Mesaj yaz..." onkeydown="if(event.key==='Enter') sendMsg()" />
-      <button type="button" onclick="sendMsg()">Gönder</button>
+      <button type="button" id="sendBtn" onclick="sendMsg()">Gönder</button>
     </div>
-    <div class="status" id="status">Hazır.</div>
+    <div class="status" id="status">Supabase URL ve anon key girip Odaya Bağlan'a bas.</div>
   </div>
 
   <script>
-    let timer = null;
-    let lastStamp = 0;
+    const CFG_KEY = "aether_sb_chat_cfg_v1";
+    let pollTimer = null;
 
-    function setStatus(s) {
-      document.getElementById("status").textContent = s;
+    function setStatus(msg, cls = "") {
+      const el = document.getElementById("status");
+      el.textContent = msg;
+      el.className = `status ${cls}`;
     }
 
     function esc(t) {
-      return String(t).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+      return String(t ?? "").replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[c]));
     }
 
-    function roomKey() {
-      const r = (document.getElementById("room").value || "oda").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
-      return `aether_live_${r}`;
+    function cleanUrl() {
+      return (document.getElementById("sbUrl").value || "").trim().replace(/\/+$/, "");
     }
 
-    function renderList(items) {
-      const el = document.getElementById("msgs");
-      el.innerHTML = items.map(x => `<div class="m"><b>${esc(x.who)} • ${esc(x.t)}</b>${esc(x.text)}</div>`).join("");
-      el.scrollTop = el.scrollHeight;
+    function cleanKey() {
+      return (document.getElementById("sbKey").value || "").trim();
     }
 
-    function readLocal() {
-      try { return JSON.parse(localStorage.getItem(roomKey()) || "[]"); } catch { return []; }
+    function cleanRoom() {
+      return (document.getElementById("room").value || "alperen-yunus-1903").trim();
     }
 
-    function writeLocal(items) {
-      try { localStorage.setItem(roomKey(), JSON.stringify(items.slice(-200))); } catch {}
-    }
-
-    async function pullCloud() {
-      const r = encodeURIComponent(roomKey());
+    function saveCfg() {
       try {
-        const res = await fetch(`https://api.restful-api.dev/objects?id=${r}`, { cache: "no-store" });
-        if (!res.ok) return;
-        const arr = await res.json();
-        const rec = Array.isArray(arr) ? arr.find(x => x.id === decodeURIComponent(r)) : null;
-        const cloudItems = rec?.data?.messages;
-        if (Array.isArray(cloudItems)) {
-          const local = readLocal();
-          const map = new Map();
-          [...local, ...cloudItems].forEach(m => map.set(m.id, m));
-          const merged = Array.from(map.values()).sort((a, b) => a.ts - b.ts);
-          writeLocal(merged);
-          renderList(merged);
-          setStatus(`Bağlı (${new Date().toLocaleTimeString("tr-TR")})`);
-        }
-      } catch (e) {
-        setStatus(`Ağ uyarısı: ${e.message}`);
+        localStorage.setItem(CFG_KEY, JSON.stringify({
+          url: cleanUrl(),
+          key: cleanKey(),
+          nick: document.getElementById("nick").value,
+          room: cleanRoom()
+        }));
+      } catch (_) {}
+    }
+
+    function loadCfg() {
+      try {
+        const raw = localStorage.getItem(CFG_KEY);
+        if (!raw) return;
+        const c = JSON.parse(raw);
+        if (c.url) document.getElementById("sbUrl").value = c.url;
+        if (c.key) document.getElementById("sbKey").value = c.key;
+        if (c.nick) document.getElementById("nick").value = c.nick;
+        if (c.room) document.getElementById("room").value = c.room;
+      } catch (_) {}
+    }
+
+    function headers() {
+      const k = cleanKey();
+      return {
+        "apikey": k,
+        "Authorization": `Bearer ${k}`,
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+      };
+    }
+
+    function renderMsgs(rows) {
+      const box = document.getElementById("msgs");
+      if (!rows.length) {
+        box.innerHTML = `<div class="status">Bu odada henüz mesaj yok. İlk mesajı gönder!</div>`;
+        return;
       }
+      box.innerHTML = rows.map(r => {
+        const saat = new Date(Number(r.created_at || Date.now())).toLocaleTimeString("tr-TR", {
+          hour: "2-digit",
+          minute: "2-digit"
+        });
+        return `<div class="m"><b>${esc(r.author)} • ${esc(saat)}</b>${esc(r.body)}</div>`;
+      }).join("");
+      box.scrollTop = box.scrollHeight;
     }
 
-    async function pushCloud(items) {
-      const id = roomKey();
-      const payload = { id, name: id, data: { messages: items.slice(-100) } };
+    async function fetchMsgs(showOk = false) {
+      const url = cleanUrl();
+      const key = cleanKey();
+      const room = cleanRoom();
+      if (!url || !key) {
+        setStatus("Supabase URL ve anon key eksik.", "err");
+        return;
+      }
+
+      const endpoint = `${url}/rest/v1/room_messages?room_code=eq.${encodeURIComponent(room)}&order=created_at.asc&limit=200`;
       try {
-        let res = await fetch(`https://api.restful-api.dev/objects/${encodeURIComponent(id)}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
+        const res = await fetch(endpoint, { headers: headers(), cache: "no-store" });
+        const data = await res.json();
         if (!res.ok) {
-          res = await fetch(`https://api.restful-api.dev/objects`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-          });
+          throw new Error(data?.message || data?.hint || `HTTP ${res.status}`);
         }
-        setStatus(res.ok ? "Mesaj sunucuya yazıldı." : `Sunucu yanıtı: ${res.status}`);
-      } catch (e) {
-        setStatus(`Gönderim hatası: ${e.message}`);
+        renderMsgs(Array.isArray(data) ? data : []);
+        if (showOk) {
+          setStatus(`Bağlı • Oda: ${room} (${new Date().toLocaleTimeString("tr-TR")})`, "ok");
+        }
+      } catch (err) {
+        setStatus(`Okuma hatası: ${err.message}`, "err");
       }
     }
 
     async function sendMsg() {
+      const url = cleanUrl();
+      const key = cleanKey();
+      const room = cleanRoom();
+      const author = (document.getElementById("nick").value || "Yunus").trim();
       const inp = document.getElementById("txt");
-      const text = inp.value.trim();
-      if (!text) return;
-      const who = (document.getElementById("nick").value || "Anonim").trim();
-      const item = {
-        id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        ts: Date.now(),
-        t: new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" }),
-        who,
-        text
+      const body = inp.value.trim();
+
+      if (!url || !key) {
+        setStatus("Önce Supabase URL ve anon key gir.", "err");
+        return;
+      }
+      if (!body) return;
+
+      const btn = document.getElementById("sendBtn");
+      btn.disabled = true;
+      setStatus("Gönderiliyor...");
+
+      const row = {
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        room_code: room,
+        author,
+        body,
+        created_at: Date.now()
       };
-      inp.value = "";
-      const list = [...readLocal(), item];
-      writeLocal(list);
-      renderList(list);
-      await pushCloud(list);
+
+      try {
+        const res = await fetch(`${url}/rest/v1/room_messages`, {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify(row)
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          throw new Error(data?.message || data?.hint || `HTTP ${res.status}`);
+        }
+        inp.value = "";
+        await fetchMsgs(true);
+      } catch (err) {
+        setStatus(`Gönderim hatası: ${err.message}`, "err");
+      } finally {
+        btn.disabled = false;
+        inp.focus();
+      }
     }
 
-    function startLoop() {
-      if (timer) clearInterval(timer);
-      renderList(readLocal());
-      pullCloud();
-      timer = setInterval(pullCloud, 2500);
+    function startChat() {
+      saveCfg();
+      if (pollTimer) clearInterval(pollTimer);
+      fetchMsgs(true);
+      pollTimer = setInterval(() => fetchMsgs(false), 2000);
     }
 
-    startLoop();
+    loadCfg();
+    if (cleanUrl() && cleanKey()) {
+      startChat();
+    }
   </script>
 </body>
 </html>
