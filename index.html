@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AETHER CHAT // Canlı Sohbet Omurgası</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+    body { background: #070b14; color: #f8fafc; min-height: 100vh; padding: 16px; }
+    .box { max-width: 760px; margin: 0 auto; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    input { flex: 1; min-width: 140px; background: #1e293b; border: 1px solid #334155; color: #fff; padding: 10px 12px; border-radius: 9px; font-size: 0.9rem; }
+    button { background: #22d3ee; color: #04131a; border: none; padding: 10px 16px; border-radius: 9px; font-weight: 800; cursor: pointer; }
+    .msgs { height: 340px; overflow-y: auto; background: #060a12; border: 1px solid #1e293b; border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .m { background: #162038; padding: 8px 11px; border-radius: 9px; font-size: 0.88rem; }
+    .m b { color: #22d3ee; font-size: 0.76rem; display: block; margin-bottom: 2px; }
+    .status { font-size: 0.78rem; color: #94a3b8; min-height: 18px; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h2>Canlı Sohbet Omurgası</h2>
+    <div class="row">
+      <input id="nick" placeholder="Adın" value="Yunus" />
+      <input id="room" placeholder="Oda kodu" value="alperen-yunus-1903" />
+      <button type="button" onclick="startLoop()">Odayı Aç</button>
+    </div>
+    <div class="msgs" id="msgs"></div>
+    <div class="row">
+      <input id="txt" placeholder="Mesaj yaz..." onkeydown="if(event.key==='Enter') sendMsg()" />
+      <button type="button" onclick="sendMsg()">Gönder</button>
+    </div>
+    <div class="status" id="status">Hazır.</div>
+  </div>
+
+  <script>
+    let timer = null;
+    let lastStamp = 0;
+
+    function setStatus(s) {
+      document.getElementById("status").textContent = s;
+    }
+
+    function esc(t) {
+      return String(t).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+    }
+
+    function roomKey() {
+      const r = (document.getElementById("room").value || "oda").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+      return `aether_live_${r}`;
+    }
+
+    function renderList(items) {
+      const el = document.getElementById("msgs");
+      el.innerHTML = items.map(x => `<div class="m"><b>${esc(x.who)} • ${esc(x.t)}</b>${esc(x.text)}</div>`).join("");
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function readLocal() {
+      try { return JSON.parse(localStorage.getItem(roomKey()) || "[]"); } catch { return []; }
+    }
+
+    function writeLocal(items) {
+      try { localStorage.setItem(roomKey(), JSON.stringify(items.slice(-200))); } catch {}
+    }
+
+    async function pullCloud() {
+      const r = encodeURIComponent(roomKey());
+      try {
+        const res = await fetch(`https://api.restful-api.dev/objects?id=${r}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const arr = await res.json();
+        const rec = Array.isArray(arr) ? arr.find(x => x.id === decodeURIComponent(r)) : null;
+        const cloudItems = rec?.data?.messages;
+        if (Array.isArray(cloudItems)) {
+          const local = readLocal();
+          const map = new Map();
+          [...local, ...cloudItems].forEach(m => map.set(m.id, m));
+          const merged = Array.from(map.values()).sort((a, b) => a.ts - b.ts);
+          writeLocal(merged);
+          renderList(merged);
+          setStatus(`Bağlı (${new Date().toLocaleTimeString("tr-TR")})`);
+        }
+      } catch (e) {
+        setStatus(`Ağ uyarısı: ${e.message}`);
+      }
+    }
+
+    async function pushCloud(items) {
+      const id = roomKey();
+      const payload = { id, name: id, data: { messages: items.slice(-100) } };
+      try {
+        let res = await fetch(`https://api.restful-api.dev/objects/${encodeURIComponent(id)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+          res = await fetch(`https://api.restful-api.dev/objects`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+        }
+        setStatus(res.ok ? "Mesaj sunucuya yazıldı." : `Sunucu yanıtı: ${res.status}`);
+      } catch (e) {
+        setStatus(`Gönderim hatası: ${e.message}`);
+      }
+    }
+
+    async function sendMsg() {
+      const inp = document.getElementById("txt");
+      const text = inp.value.trim();
+      if (!text) return;
+      const who = (document.getElementById("nick").value || "Anonim").trim();
+      const item = {
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        ts: Date.now(),
+        t: new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" }),
+        who,
+        text
+      };
+      inp.value = "";
+      const list = [...readLocal(), item];
+      writeLocal(list);
+      renderList(list);
+      await pushCloud(list);
+    }
+
+    function startLoop() {
+      if (timer) clearInterval(timer);
+      renderList(readLocal());
+      pullCloud();
+      timer = setInterval(pullCloud, 2500);
+    }
+
+    startLoop();
+  </script>
+</body>
+</html>
